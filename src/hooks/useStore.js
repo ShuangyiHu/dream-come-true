@@ -1,33 +1,179 @@
 import { useState, useEffect, useCallback } from "react";
-import { DEFAULT_GOAL, DEFAULT_METRICS_TARGETS, DEFAULT_METRICS_ACTUAL, DEFAULT_TASKS_TODAY, getToday } from "../data/defaults";
+import {
+  STORAGE_KEY,
+  getToday,
+  buildDefaultSprintGoals,
+  DEFAULT_TASKS_SEED,
+} from "../data/defaults";
 
-const KEY = "jobtrack_v4";
-
-function load() { try { const r=localStorage.getItem(KEY); return r?JSON.parse(r):null; } catch { return null; } }
-function save(s) { try { localStorage.setItem(KEY,JSON.stringify(s)); } catch {} }
+function load() {
+  try {
+    const r = localStorage.getItem(STORAGE_KEY);
+    return r ? JSON.parse(r) : null;
+  } catch {
+    return null;
+  }
+}
+function save(s) {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(s));
+  } catch {}
+}
 
 function buildInitial() {
-  const saved=load(); if(saved) return saved;
+  const saved = load();
+  if (saved) return saved;
+  const today = getToday();
   return {
-    goal: { ...DEFAULT_GOAL },
-    targets: { ...DEFAULT_METRICS_TARGETS },
-    actuals: { ...DEFAULT_METRICS_ACTUAL },
-    tasks: { [getToday()]: DEFAULT_TASKS_TODAY },
+    // sprint goals: { [sprintId]: { applications, leetcode, ... } }
+    sprintGoals: buildDefaultSprintGoals(),
+    // sprint actuals: { [sprintId]: { applications, leetcode, ... } }
+    sprintActuals: {
+      1: {
+        applications: 0,
+        leetcode: 0,
+        projects: 0,
+        referrals: 0,
+        interviews: 0,
+      },
+    },
+    // cumulative totals (long-term progress)
+    totals: {
+      applications: 0,
+      leetcode: 0,
+      projects: 0,
+      referrals: 0,
+      interviews: 0,
+    },
+    // tasks by date: { "YYYY-MM-DD": [{ id, title, completed }] }
+    tasks: { [today]: DEFAULT_TASKS_SEED.map((t) => ({ ...t })) },
     dark: false,
   };
 }
 
 export function useStore() {
   const [state, setState] = useState(buildInitial);
-  const [dark, setDark] = useState(() => { const s=load(); return s?.dark||false; });
+  const [dark, setDark] = useState(() => {
+    const s = load();
+    return s?.dark || false;
+  });
 
-  useEffect(() => { save({ ...state, dark }); }, [state, dark]);
+  useEffect(() => {
+    save({ ...state, dark });
+  }, [state, dark]);
 
-  const updateGoal   = useCallback(patch => setState(s=>({...s,goal:{...s.goal,...patch}})),[]);
-  const updateTarget = useCallback((k,v)  => setState(s=>({...s,targets:{...s.targets,[k]:Math.max(1,v)}})),[]);
-  const setActual    = useCallback((k,v)  => setState(s=>({...s,actuals:{...s.actuals,[k]:Math.max(0,v)}})),[]);
-  const setTasks     = useCallback(upd    => setState(s=>({...s,tasks:typeof upd==="function"?upd(s.tasks):upd})),[]);
-  const toggleDark   = useCallback(()     => setDark(d=>!d), []);
+  // ── Sprint goals ──────────────────────────────────────────────────────────
+  const setSprintGoal = useCallback((sprintId, key, value) => {
+    setState((s) => ({
+      ...s,
+      sprintGoals: {
+        ...s.sprintGoals,
+        [sprintId]: {
+          ...(s.sprintGoals[sprintId] || {}),
+          [key]: Math.max(0, value),
+        },
+      },
+    }));
+  }, []);
 
-  return { state, dark, updateGoal, updateTarget, setActual, setTasks, toggleDark };
+  // ── Sprint actuals (increments) ───────────────────────────────────────────
+  const setSprintActual = useCallback((sprintId, key, value) => {
+    setState((s) => {
+      const prev = s.sprintActuals[sprintId] || {};
+      const prevVal = prev[key] || 0;
+      const delta = Math.max(0, value) - prevVal;
+      return {
+        ...s,
+        sprintActuals: {
+          ...s.sprintActuals,
+          [sprintId]: { ...prev, [key]: Math.max(0, value) },
+        },
+        // also update cumulative totals by the delta
+        totals: {
+          ...s.totals,
+          [key]: Math.max(0, (s.totals[key] || 0) + delta),
+        },
+      };
+    });
+  }, []);
+
+  // ── Direct total edit (for LTP tab) ──────────────────────────────────────
+  const setTotal = useCallback((key, value) => {
+    setState((s) => ({
+      ...s,
+      totals: { ...s.totals, [key]: Math.max(0, value) },
+    }));
+  }, []);
+
+  // ── Tasks ─────────────────────────────────────────────────────────────────
+  const setTasks = useCallback((upd) => {
+    setState((s) => ({
+      ...s,
+      tasks: typeof upd === "function" ? upd(s.tasks) : upd,
+    }));
+  }, []);
+
+  const addTask = useCallback((date, title) => {
+    if (!title.trim()) return;
+    setState((s) => ({
+      ...s,
+      tasks: {
+        ...s.tasks,
+        [date]: [
+          ...(s.tasks[date] || []),
+          { id: Date.now(), title: title.trim(), completed: false },
+        ],
+      },
+    }));
+  }, []);
+
+  const toggleTask = useCallback((date, id) => {
+    setState((s) => ({
+      ...s,
+      tasks: {
+        ...s.tasks,
+        [date]: (s.tasks[date] || []).map((t) =>
+          t.id === id ? { ...t, completed: !t.completed } : t,
+        ),
+      },
+    }));
+  }, []);
+
+  const deleteTask = useCallback((date, id) => {
+    setState((s) => ({
+      ...s,
+      tasks: {
+        ...s.tasks,
+        [date]: (s.tasks[date] || []).filter((t) => t.id !== id),
+      },
+    }));
+  }, []);
+
+  const editTask = useCallback((date, id, title) => {
+    setState((s) => ({
+      ...s,
+      tasks: {
+        ...s.tasks,
+        [date]: (s.tasks[date] || []).map((t) =>
+          t.id === id ? { ...t, title } : t,
+        ),
+      },
+    }));
+  }, []);
+
+  const toggleDark = useCallback(() => setDark((d) => !d), []);
+
+  return {
+    state,
+    dark,
+    setSprintGoal,
+    setSprintActual,
+    setTotal,
+    setTasks,
+    addTask,
+    toggleTask,
+    deleteTask,
+    editTask,
+    toggleDark,
+  };
 }
